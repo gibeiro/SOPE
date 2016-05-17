@@ -1,15 +1,16 @@
-CFLAGS	= -c -Wall -pthread
+CFLAGS	= -c -Wall
+LDFLAGS = -pthread
 CC	= gcc
 
 all: gerador parque
 
 gerador: gerador.o
 	@mkdir -p bin
-	@$(CC) obj/$< -o bin/$@
+	@$(CC) obj/$< $(LDFLAGS) -o bin/$@
 
 parque: parque.o
 	@mkdir -p bin
-	@$(CC) obj/$< -o bin/$@
+	@$(CC) obj/$< $(LDFLAGS) -o bin/$@
 
 gerador.o:
 	@mkdir -p obj
