@@ -2,12 +2,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "viatura.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
-time_t current_time;
-time_t closing_time;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+struct vehicle;
 void *ctrl_thread(void *var);
 void *arrum_thread(void *var);
 
@@ -28,59 +29,128 @@ int main(int argc, char *argv[]){
 		return 3;
 	}
 
-	current_time = time(NULL);
+	char fifoN[] = "fifoN";
+	char fifoS[] = "fifoS";
+	char fifoE[] = "fifoE";
+	char fifoO[] = "fifoO";
 
-	closing_time = current_time + (time_t) atoi(argv[2]);	
+	printf("Making FIFOs\n");
+	mode_t mode = 0644;
+	mkfifo(fifoN, mode);
+	mkfifo(fifoS, mode);
+	mkfifo(fifoE, mode);
+	mkfifo(fifoO, mode);
 
-	pthread_t N_ctrl, S_ctrl, E_ctrl, O_ctrl;
+	printf("Creating controler threads\n");
+	pthread_t tid_N, tid_S, tid_E, tid_O;
+	pthread_create(&tid_N, NULL, ctrl_thread, fifoN);
+	pthread_create(&tid_S, NULL, ctrl_thread, fifoS);
+	pthread_create(&tid_E, NULL, ctrl_thread, fifoE);
+	pthread_create(&tid_O, NULL, ctrl_thread, fifoO);
 
-	pthread_create(&N_ctrl, NULL, ctrl_thread, "/tmp/fifoN");
-	pthread_create(&S_ctrl, NULL, ctrl_thread, "/tmp/fifoS");
-	pthread_create(&E_ctrl, NULL, ctrl_thread, "/tmp/fifoE");
-	pthread_create(&O_ctrl, NULL, ctrl_thread, "/tmp/fifoO");
+	printf("Opening FIFOs WRONLY\n");
+	int fd_N = open(fifoN, O_WRONLY);
+	int fd_E = open(fifoE, O_WRONLY);
+	int fd_S = open(fifoS, O_WRONLY);
+	int fd_O = open(fifoO, O_WRONLY);
 
-	pthread_join(N_ctrl, NULL);
-	pthread_join(S_ctrl, NULL);
-	pthread_join(E_ctrl, NULL);
-	pthread_join(O_ctrl, NULL);
+	printf("Waiting %s seconds ...\n",argv[2]);
+	sleep(atoi(argv[2]));
 
+	vehicle close_park = last_vehicle();
+	int sizeof_vehicle = sizeof(vehicle);
+	//pthread_mutex_lock(&mutex);
+
+	printf("Done! Closing park ...\n");
+	write(fd_N,&close_park,sizeof_vehicle);
+	write(fd_S,&close_park,sizeof_vehicle);
+	write(fd_E,&close_park,sizeof_vehicle);
+	write(fd_O,&close_park,sizeof_vehicle);
+
+	printf("Done! Closing FIFOs...\n");
+	close(fd_N);
+	close(fd_S);
+	close(fd_E);
+	close(fd_O);
+
+	printf("Done! Waiting for threads to close...\n");
+	pthread_join(tid_N, NULL);
+	pthread_join(tid_S, NULL);
+	pthread_join(tid_E, NULL);
+	pthread_join(tid_O, NULL);
+
+	//pthread_mutex_unlock(&mutex);
+
+	printf("Done! Unlinking FIFOs...\n");
+	unlink(fifoN);
+	unlink(fifoS);
+	unlink(fifoE);
+	unlink(fifoO);
+
+	printf("Done!\n");
 	return 0;
 }
 
 void *ctrl_thread(void *var){
 
-	int fifo = mkfifo((char*)var, 0644);
+	char* fifo_name = (char*) var;
+	printf("ctrl_thread(\"%s\")\n",fifo_name);
 
-	int fd_read = open((char*)var, O_RDONLY);
-	int fd_write = open((char*)var, O_WRONLY);
-	
-	vehicle* vehicle;
+	int fd_read = open(fifo_name, O_RDONLY);
+
+	vehicle vehicle;
 	pthread_t arrum;
-	
+
 	while(vehicle = new_vehicle(fd) != NULL){
 
-		if(tmp->id == -1){
-			close(fd_write);
-			continue;
-		}
+		if(vehicle.id == -1)
+			break;
 
 		pthread_create(&arrum, NULL, arrum_thread, vehicle);
 	}
-	
-	close(fd_read);	
-	unlink((char*) var);
-	
-	return NULL;
 
-}
-	
+	printf("Closing ctrl_thread(\"%s\")\n",fifo_name);
+
+	return NULL;
 
 }
 
 void *arrum_thread(void *var){
-
+/*
 	pthread_detach(pthread_self());
 	vehicle* vehicle = (vehicle*) var;
 	free(vehicle);
+	*/
+	printf("arrum_thread()\n");
 
+}
+
+typedef struct{
+
+	int parking_durantion;
+	int id;
+	int fifo_id;
+	char entrance;
+
+} vehicle;
+
+vehicle new_vehicle(int fd){
+
+	vehicle v;
+
+	read(fd,&v,sizeof(vehicle);
+
+	if(v.id == -1)
+		return NULL;
+	else
+		return v;
+}
+
+vehicle last_vehicle(){
+
+	vehicle v;
+
+	v.id = -1;
+
+	return v;
 }
