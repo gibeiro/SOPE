@@ -1,5 +1,5 @@
 CFLAGS	= -c -Wall
-LDFLAGS = -pthread
+LDFLAGS = -pthread -D_REENTRANT
 CC	= gcc
 
 all: gerador parque
