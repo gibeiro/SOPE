@@ -7,6 +7,21 @@
 
  */
 
+
+/*
+thread vehicle
+
+fd = open(FIFO,...,O_WRONLY|O_NONBLOCK);
+if(fd != -1){
+write(...,vehicle,...);
+close(fd);
+}
+if(fd == -1){
+//parque fechado
+}
+*/
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

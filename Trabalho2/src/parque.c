@@ -24,7 +24,7 @@ typedef struct {
 } vehicle;
 
 typedef struct {
-
+	pthread_t arrum;
 	vehicle v;
 	size_t i;
 
@@ -106,7 +106,7 @@ int main(int argc, char *argv[]){
 
 
 
-	// Inicializar mutexes
+	//	Inicializar mutexes
 	for(i = 0; i < 4; i++){
 		pthread_mutex_t m_tmp;
 		mutex[i] = m_tmp;
@@ -119,10 +119,9 @@ int main(int argc, char *argv[]){
 
 
 	//	Criar FIFOs
-	mode_t mode = 0644;
 	for(i = 0; i < 4; i++)
-		if(mkfifo(fifo[i], mode) != 0){
-			perror("pthread_mutex_init()");
+		if(mkfifo(fifo[i], O_WRONLY) != 0){
+			perror("mkfifo()");
 			exit(EXIT_FAILURE);
 		}
 
@@ -160,8 +159,7 @@ int main(int argc, char *argv[]){
 
 
 	//	Fechar parque
-	vehicle close_park = last_vehicle();
-	int sizeof_vehicle = sizeof(vehicle);
+	vehicle stop = last_vehicle();
 
 	printf("Done! Closing park ...\n");
 	for(i = 0; i < 4; i++){
@@ -169,7 +167,7 @@ int main(int argc, char *argv[]){
 			perror("pthread_mutex_lock()");
 			exit(EXIT_FAILURE);
 		}
-		if(write(fd[i],&close_park,sizeof_vehicle) != 0){
+		if(write(fd[i],&stop,sizeof(stop)) == -1){
 			perror("write()");
 			exit(EXIT_FAILURE);
 		}
@@ -221,10 +219,10 @@ int main(int argc, char *argv[]){
 
 
 	printf("Done! Unlinking FIFOs...\n");
-	unlink(fifo[N]);
-	unlink(fifo[S]);
-	unlink(fifo[E]);
-	unlink(fifo[O]);
+	for(i = 0; i < 4; i++)
+		if(unlink(fifo[i]) != 0){
+			perror("unlink()");
+		}
 
 	printf("Done!\n");
 	return 0;
@@ -235,6 +233,7 @@ void *ctrl_thread(void *var){
 	arrum_param param;
 
 	param.i = *(size_t*) var;
+	_Bool closed = 0;
 
 	printf("ctrl_thread(\"%s\")\n",fifo[param.i]);
 
@@ -244,52 +243,38 @@ void *ctrl_thread(void *var){
 	if(fd == -1){
 		perror("open()");
 		exit(EXIT_FAILURE);
-	}
-
-	pthread_t arrum;
+	}	
 
 
 	//	Ler veiculos do FIFO
 	//	ate o parque fechar
 
-	for(;param.v.id != -1; param.v = new_vehicle(fd)){
+	while(read(fd,&param.v,sizeof(vehicle)) != 0){
 
-
-
-		//	Snal para fechar
-		//	o parque
-		if(param.v.id == -1){
-			printf("close veicle\n");
-			break;
-		}
-
-		if(&param.v == NULL){
-			printf("got null\n");
+		if(closed){
+			//mandar mensagem "fehado"
 			continue;
 		}
 
-		//	Read invalido
-		if(
-				param.v.id < 0 ||
-				param.v.parking_duration <= 0 ||
-				param.v.fifo_id <= 0
-		)
-			continue;
+		if(param.v.id == -1)
+			closed = 1;
 
-		//	Criar thread arrumador
-		if(pthread_create(&arrum, NULL, arrum_thread, &param) != 0){
-			perror("pthread_create()");
-			exit(EXIT_FAILURE);
-		}
-	}
+		;
+		pthread_create(
+			&param.arrum,
+			NULL,
+			arrum_thread,
+			memcpy(malloc(sizeof(param)),&param,sizeof(param)));		
+
+        }
+	
 
 	//	Fechar FIFO
-	if(close(fd) !=0){
+	if(close(fd) != 0){
 		perror("close()");
 		exit(EXIT_FAILURE);
 	}
-
-	printf("Closing ctrl_thread(\"%s\")\n",fifo[param.i]);
+	
 
 	return NULL;
 
@@ -299,33 +284,37 @@ void *arrum_thread(void *var){
 
 	printf("arrum_thread()\n");
 
+	arrum_param *param = (arrum_param*) var;
+
 	//	Detach thread
-	if(pthread_detach(pthread_self()) != 0){
+	if(pthread_detach(param->arrum) != 0){
 		perror("pthread_detach()");
 		exit(EXIT_FAILURE);
 	}
 
-	arrum_param param = *(arrum_param*) var;
+		
+	
 
-	vehicle_info(&param.v);
+	printf("Entrada %d\n", (int)param->i);
+	vehicle_info(&param->v);
 
 	//	Caso hajam lugares livres
 	if(empty_spots > 0){
 
 		//	Decrementar lugares livres
-		if(pthread_mutex_lock(&mutex[param.i]) != 0){
+		if(pthread_mutex_lock(&mutex[param->i]) != 0){
 			perror("pthread_mutex_unlock()");
 			exit(EXIT_FAILURE);
 		}
 
 		empty_spots--;
 
-		if(pthread_mutex_unlock(&mutex[param.i]) != 0){
+		if(pthread_mutex_unlock(&mutex[param->i]) != 0){
 			perror("pthread_mutex_unlock()");
 			exit(EXIT_FAILURE);
 		}
 
-		clock_t end = clock() + param.v.parking_duration;
+		clock_t end = clock() + param->v.parking_duration;
 
 
 		//	Esperar saida do carro
@@ -333,14 +322,14 @@ void *arrum_thread(void *var){
 
 
 		//	Incrementar lugares livres
-		if(pthread_mutex_lock(&mutex[param.i]) != 0){
+		if(pthread_mutex_lock(&mutex[param->i]) != 0){
 			perror("pthread_mutex_unlock()");
 			exit(EXIT_FAILURE);
 		}
 
 		empty_spots++;
 
-		if(pthread_mutex_unlock(&mutex[param.i]) != 0){
+		if(pthread_mutex_unlock(&mutex[param->i]) != 0){
 			perror("pthread_mutex_unlock()");
 			exit(EXIT_FAILURE);
 		}
@@ -348,6 +337,8 @@ void *arrum_thread(void *var){
 	else{
 
 	}
+
+	free(var);
 
 	return NULL;
 
