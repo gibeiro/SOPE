@@ -1,26 +1,9 @@
-CFLAGS	= -c -Wall
-LDFLAGS = -pthread -D_REENTRANT
-CC	= gcc
+CFLAGS	= -Wall -pthread -D_REENTRANT -lpthread -lrt
 
-all: gerador parque
-
-gerador: gerador.o
+all:
 	@mkdir -p bin
-	@$(CC) obj/$< $(LDFLAGS) -o bin/$@
-
-parque: parque.o
-	@mkdir -p bin
-	@$(CC) obj/$< $(LDFLAGS) -o bin/$@
-
-gerador.o:
-	@mkdir -p obj
-	@$(CC) src/gerador.c $(CFLAGS)
-	@mv $@ obj	
-	
-parque.o:
-	@mkdir -p obj
-	@$(CC) src/parque.c $(CFLAGS)
-	@mv $@ obj
-
+	@gcc  src/parque.c src/structs.c -o bin/parque $(CFLAGS) 
+	@gcc  src/gerador.c src/structs.c -o bin/gerador $(CFLAGS)
+		
 clean:
-	@rm -r bin obj
+	@rm -r bin

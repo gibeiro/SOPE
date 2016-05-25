@@ -9,42 +9,10 @@
 #include <sys/shm.h>
 #include <fcntl.h>
 #include <string.h>
-
-#define	N	0
-#define	S	1
-#define	E	2
-#define	O	3
-
-typedef struct {
-
-	clock_t parking_duration;
-	int id;
-	int fifo_id;
-
-} vehicle;
-
-typedef struct {
-	pthread_t arrum;
-	vehicle v;
-	size_t i;
-
-} arrum_param;
-
-static const char *fifo[] = {
-		"fifoN",
-		"fifoS",
-		"fifoE",
-		"fifoO"
-};
-
-static size_t entrance[] = {N,S,E,O};
+#include "structs.h"
 
 static pthread_mutex_t * volatile mutex;
 static volatile size_t empty_spots;
-
-vehicle new_vehicle(int fd);
-vehicle last_vehicle();
-void vehicle_info(vehicle *v);
 
 void *ctrl_thread(void *var);
 void *arrum_thread(void *var);
@@ -81,7 +49,10 @@ int main(int argc, char *argv[]){
 	//	mutexes em diferentes
 	//	processos
 	pthread_mutexattr_t mattr;
-	pthread_mutexattr_setpshared(&mattr,PTHREAD_PROCESS_SHARED);
+	if(pthread_mutexattr_setpshared(&mattr,PTHREAD_PROCESS_SHARED) != 0){
+		perror("pthread_mutexattr_setpshared()");
+		exit(EXIT_FAILURE);
+	}
 
 
 
@@ -143,7 +114,7 @@ int main(int argc, char *argv[]){
 	int fd[4];
 	for(i = 0; i < 4; i++){
 		int fd_tmp;
-		if( (fd_tmp = open(fifo[i], O_WRONLY)) == -1){
+		if( (fd_tmp = open(fifo[i], O_WRONLY, 0666)) == -1){
 			perror("open()");
 			exit(EXIT_FAILURE);
 		}
@@ -230,7 +201,7 @@ int main(int argc, char *argv[]){
 
 void *ctrl_thread(void *var){
 
-	arrum_param param;
+	thread_param param;
 
 	param.i = *(size_t*) var;
 	_Bool closed = 0;
@@ -239,7 +210,7 @@ void *ctrl_thread(void *var){
 
 
 	//	Abrir o FIFO
-	int fd = open(fifo[param.i], O_RDONLY);
+	int fd = open(fifo[param.i], O_RDONLY, 0666);
 	if(fd == -1){
 		perror("open()");
 		exit(EXIT_FAILURE);
@@ -256,12 +227,14 @@ void *ctrl_thread(void *var){
 			continue;
 		}
 
-		if(param.v.id == -1)
+		if(param.v.id == -1){
 			closed = 1;
+			printf("Entrance %d is closed.\n",(int)param.i);
+		}
 
-		;
+
 		pthread_create(
-			&param.arrum,
+			&param.tid,
 			NULL,
 			arrum_thread,
 			memcpy(malloc(sizeof(param)),&param,sizeof(param)));		
@@ -284,10 +257,10 @@ void *arrum_thread(void *var){
 
 	printf("arrum_thread()\n");
 
-	arrum_param *param = (arrum_param*) var;
+	thread_param *param = (thread_param*) var;
 
 	//	Detach thread
-	if(pthread_detach(param->arrum) != 0){
+	if(pthread_detach(param->tid) != 0){
 		perror("pthread_detach()");
 		exit(EXIT_FAILURE);
 	}
@@ -314,7 +287,7 @@ void *arrum_thread(void *var){
 			exit(EXIT_FAILURE);
 		}
 
-		clock_t end = clock() + param->v.parking_duration;
+		clock_t end = clock() + param->v.duration;
 
 
 		//	Esperar saida do carro
@@ -342,31 +315,4 @@ void *arrum_thread(void *var){
 
 	return NULL;
 
-}
-
-
-vehicle new_vehicle(int fd){
-
-	vehicle v;
-
-	if(read(fd,&v,sizeof(vehicle)) <= 0){
-		perror("read()");
-		return *(vehicle*)NULL;
-	}
-
-	return v;
-}
-
-vehicle last_vehicle(){
-
-	vehicle v;
-
-	v.id = -1;
-
-	return v;
-}
-
-void vehicle_info(vehicle *v){
-
-	printf("Vehicle %d\nParking duration: %d\nFIFO id: %d\n\n",v->id,(int)v->parking_duration,v->fifo_id);
 }
