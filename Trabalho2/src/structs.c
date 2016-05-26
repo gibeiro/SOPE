@@ -22,5 +22,5 @@ vehicle last_vehicle(){
 
 void vehicle_info(vehicle *v){
 
-	printf("Vehicle %d\nParking duration: %d\nFIFO id: %d\n\n",v->id,(int)v->duration,v->fifo_id);
+	printf("Vehicle %d\nParking duration: %d\n\n",v->id,(int)v->duration);
 }
