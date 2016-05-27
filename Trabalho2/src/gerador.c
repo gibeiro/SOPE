@@ -11,13 +11,13 @@
 #include <unistd.h>
 #include "structs.h"
 
-static pthread_mutex_t *mutex;
+static pthread_mutex_t *mutex[NR_ENTR];
 static size_t id = 0;
 static const char log[] = "gerador.log";
 static int log_fd;
-static pthread_mutex_t log_mutex;
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static clock_t start;
-//static struct tms st_cpu;
+static int shmid = 0;
 
 void* vehicle_thread(void* var);
 
@@ -40,8 +40,6 @@ int main(int argc, char *argv[]){
 		return 3;
 	}
 
-	//start = times(&st_cpu);
-
 	log_fd = open(log,O_WRONLY|O_CREAT,0666);
 	if(log_fd == -1){
 		perror("open()");
@@ -58,39 +56,64 @@ int main(int argc, char *argv[]){
 	}
 
 
-	key_t key = ftok("sope2",0);
-	int shmid = shmget(key,4*sizeof(pthread_mutex_t),0666);
+	shmid = shm_open("/sope",O_RDWR,0666);
 	if(shmid == -1){
 		perror("shmget()");
 		exit(EXIT_FAILURE);
 	}
 
-	mutex = (pthread_mutex_t*) shmat(shmid,NULL,0);
+	if(ftruncate(shmid,4*sizeof(pthread_mutex_t)) < 0){
+		perror("ftruncate()");
+		exit(EXIT_FAILURE);
+	}
+
+	char *shm =	(char*) mmap(
+			0,
+			4*sizeof(pthread_mutex_t),
+			PROT_READ|PROT_WRITE,
+			MAP_SHARED,
+			shmid,
+			0);
+
+	if(shm == (char*) MAP_FAILED){
+		perror("mmap()");
+		exit(EXIT_FAILURE);
+	}
+	int i = 0;
+	for(i = 0; i < NR_ENTR;i++)
+		mutex[i] = (pthread_mutex_t*)shm+sizeof(pthread_mutex_t)*i;
 
 	time_t end = time(NULL) + (time_t) atoi(argv[1]);
 	clock_t ticks = (clock_t) atoi(argv[2]);
 
 	srand(time(NULL));
 
-	thread_param *param;
+	thread_param param;
 
+	const int prob[] = {0,0,0,0,0,1,1,1,2,2};
 	while(time(NULL) < end){
 
-		param = malloc(sizeof(param));
-		param->i = rand() % 4;
-		param->v.duration = ticks * (clock_t) ((rand() % 2) + 1);
-		param->v.id = id++;
+		param.i = rand() % 4;
+		param.v.duration = ticks * (clock_t) ((rand() % 10) + 1);
+		param.v.id = id++;
+		thread_param *tmp = malloc(sizeof(pthread_mutex_t));
+		memcpy(tmp,&param,sizeof(pthread_mutex_t));
 
-		if((param->tid = pthread_create(
-				&param->t,
+		if((tmp->tid = pthread_create(
+				&tmp->t,
 				NULL,
 				vehicle_thread,
-				param
+				tmp
 		))
 				!= 0){
-			perror("pthread_create()");
-			exit(EXIT_FAILURE);
+			//perror("pthread_create()");
+			free(tmp);
+			continue;
 		}
+
+		clock_t end = clock() +  prob[rand()%10]*ticks;
+
+		while(clock() < end);
 
 	}
 
@@ -108,86 +131,137 @@ void* vehicle_thread(void* var){
 
 	thread_param *param = (thread_param*)var;
 
-	pthread_detach(pthread_self());
+	if(pthread_detach(pthread_self()) != 0){
+		perror("pthread_detach()");
+		exit(EXIT_FAILURE);
+	}
 
-	printf("vehicle_thread()\n");
-	vehicle_info(&param->v);
+	printf("\nvehicle_thread()\n");
+	printf("Entrance %d\n", (int)param->i);
+		vehicle_info(&param->v);
+
 
 	char fifo_priv[FIFO_NAME_BUFFER_SIZE];
 	sprintf(fifo_priv,"fifo%d",param->v.id);
-
 	if(mkfifo(fifo_priv, O_RDWR) != 0){
 		perror("mkfifo()");
 		exit(EXIT_FAILURE);
 	}
 
-	if(pthread_mutex_lock(&mutex[param->i]) != 0){
-		perror("pthread_mutex_lock()");
-		exit(EXIT_FAILURE);
+	char log_line[LOG_LINE_MAX_SIZE];
+	char destin[1];
+	clock_t current_tick;
+	switch(param->i){
+	case N:
+		destin[0] = 'N';
+		break;
+	case S:
+		destin[0] = 'S';
+		break;
+	case E:
+		destin[0] = 'E';
+		break;
+	case O:
+		destin[0] = 'O';
+		break;
+
 	}
 
+	printf("Opening entrance FIFO ...");
 	int fd_w = open(fifo[param->i],O_WRONLY|O_NONBLOCK, 0666);
 
 	if(fd_w != -1){
+		printf(" Done!\n");
+		if(pthread_mutex_lock(mutex[param->i]) != 0){
+			//perror("pthread_mutex_lock()");
+			//exit(EXIT_FAILURE);
+		}
 
+		printf("Writting ...");
 		if( write(fd_w,&param->v,sizeof(param->v)) == -1){
 			perror("write()");
 			exit(EXIT_FAILURE);
+		}
+
+		if(pthread_mutex_unlock(mutex[param->i]) != 0){
+			//perror("pthread_mutex_unlock()");
+			//exit(EXIT_FAILURE);
 		}
 
 		if(close(fd_w) != 0){
 			perror("close()");
 			exit(EXIT_FAILURE);
 		}
+		printf(" Done!\n");
 	}
 
 	if(fd_w == -1){
-		//parque fechado
-		printf("parque fechado\n");
+		printf(" Closed!\n");
+		current_tick = clock();
+		memset(log_line,0,sizeof(log_line));
+		sprintf(
+				log_line,
+				"%d\t;\t%d\t;\t%s\t;\t%d\t;\t?\t;\tencerrado\n",
+				(int) (current_tick - start),
+				param->v.id,
+				destin,
+				(int)param->v.duration
+
+		);
+
+		if(pthread_mutex_lock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			exit(EXIT_FAILURE);
+		}
+
+
+		if(write(log_fd,log_line,strlen(log_line)) == -1){
+			perror("write()");
+			exit(EXIT_FAILURE);
+		}
+
+		if(pthread_mutex_unlock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			exit(EXIT_FAILURE);
+		}
+
+		printf(vehicle_thread end\n\n");
+
+		unlink(fifo_priv);
+
+		free(var);
+		return NULL;
 	}
 
-	if(pthread_mutex_unlock(&mutex[param->i]) != 0){
-		perror("pthread_mutex_unlock()");
-		exit(EXIT_FAILURE);
-	}
 
-	int fd_r = open(fifo_priv,O_RDONLY,0666);
+	printf("Opening private FIFO ...");
+	int fd_r = open(fifo_priv,O_RDONLY, 0666);
 	if(fd_r == -1){
-		perror("open()");
-		exit(EXIT_FAILURE);
+		close(fd_r);
+		printf(" Closed!\n");
+		unlink(fifo_priv);
+		free(var);
+		return NULL;
 	}
+	printf(" Done!\n");
 
+	printf("Reading private FIFO ...");
 	char message[MAX_MESSAGE_SIZE];
 	if(read(fd_r,message,sizeof(message)) == -1){
 		perror("read()");
 		exit(EXIT_FAILURE);
 	}
+	printf(" Done!\n");
 
-	char log_line[LOG_LINE_MAX_SIZE];
-	char destin[1];
-	switch(param->i){
-	case N:
-		*destin = 'N';
-		break;
-	case S:
-		*destin = 'S';
-		break;
-	case E:
-		*destin = 'E';
-		break;
-	case O:
-		*destin = 'O';
-		break;
-
-	}
 
 	if(strcmp(message, "cheio!") == 0){
 
-		clock_t current_tick = clock();
+		current_tick = clock();
+		memset(log_line,0,sizeof(log_line));
 		sprintf(
 				log_line,
-				"%llu\t;\t%d\t;\t%s\t;\t%d\t;\t?\t;\t%s\n",
-				(unsigned long long) (current_tick - start),
+				"%d\t;\t%d\t;\t%s\t;\t%d\t;\t?\t;\t%s\n",
+				(int) (current_tick - start),
 				param->v.id,
 				destin,
 				(int)param->v.duration,
@@ -199,7 +273,6 @@ void* vehicle_thread(void* var){
 			perror("pthread_mutex_lock()");
 			exit(EXIT_FAILURE);
 		}
-
 		if(write(log_fd,log_line,strlen(log_line)) == -1){
 			perror("write()");
 			exit(EXIT_FAILURE);
@@ -213,15 +286,15 @@ void* vehicle_thread(void* var){
 	}
 	else if(strcmp(message, "entrada") == 0){
 
-		clock_t current_tick = clock();
+		current_tick = clock();
+		memset(log_line,0,sizeof(log_line));
 		sprintf(
 				log_line,
-				"%llu\t;\t%d\t;\t%s\t;\t%d\t;\t%s\t;\t%s\n",
-				(unsigned long long) (current_tick - start),
+				"%d\t;\t%d\t;\t%s\t;\t%d\t;\t?\t;\t%s\n",
+				(int) (current_tick - start),
 				param->v.id,
 				destin,
 				(int)param->v.duration,
-				"?",
 				message
 
 		);
@@ -230,6 +303,7 @@ void* vehicle_thread(void* var){
 			perror("pthread_mutex_lock()");
 			exit(EXIT_FAILURE);
 		}
+
 
 		if(write(log_fd,log_line,strlen(log_line)) == -1){
 			perror("write()");
@@ -249,14 +323,15 @@ void* vehicle_thread(void* var){
 		memset(log_line,0,LOG_LINE_MAX_SIZE);
 
 		current_tick = clock();
+		memset(log_line,0,sizeof(log_line));
 		sprintf(
 				log_line,
-				"%llu\t;\t%d\t;\t%s\t;\t%d\t;\t%llu\t;\t%s\n",
-				(unsigned long long) (current_tick - start),
+				"%d\t;\t%d\t;\t%s\t;\t%d\t;\t%d\t;\t%s\n",
+				(int) (current_tick - start),
 				param->v.id,
 				destin,
 				(int)param->v.duration,
-				(unsigned long long) (current_tick - v_start),
+				(int) (current_tick - v_start),
 				message
 
 		);
@@ -265,6 +340,7 @@ void* vehicle_thread(void* var){
 			perror("pthread_mutex_lock()");
 			exit(EXIT_FAILURE);
 		}
+
 
 		if(write(log_fd,log_line,strlen(log_line)) == -1){
 			perror("write()");
@@ -277,13 +353,46 @@ void* vehicle_thread(void* var){
 		}
 
 	}
+	else if(strcmp(message, "encerrado") == 0){
 
+		current_tick = clock();
+		memset(log_line,0,sizeof(log_line));
+		sprintf(
+				log_line,
+				"%d\t;\t%d\t;\t%s\t;\t%d\t;\t?\t;\t%s\n",
+				(int) (current_tick - start),
+				param->v.id,
+				destin,
+				(int)param->v.duration,
+				message
+
+		);
+
+		if(pthread_mutex_lock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			exit(EXIT_FAILURE);
+		}
+
+
+		if(write(log_fd,log_line,strlen(log_line)) == -1){
+			perror("write()");
+			exit(EXIT_FAILURE);
+		}
+
+		if(pthread_mutex_unlock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			exit(EXIT_FAILURE);
+		}
+	}
 
 
 	if(close(fd_r) != 0){
 		perror("close()");
 		exit(EXIT_FAILURE);
 	}
+
+	printf("vehicle_thread() end\n\n");
+
 	unlink(fifo_priv);
 
 	free(var);

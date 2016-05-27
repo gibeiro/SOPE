@@ -20,6 +20,7 @@ static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t empty_spots_mutex = PTHREAD_MUTEX_INITIALIZER;
 static clock_t start;
 static int shmid = 0;
+static volatile _Bool closed = 0;
 
 void *ctrl_thread(void *var);
 void *arrum_thread(void *var);
@@ -73,7 +74,7 @@ int main(int argc, char *argv[]){
 		exit(EXIT_FAILURE);
 	}
 
-	shmid = shm_open("/sope",O_CREAT|O_RDWR,0600);
+	shmid = shm_open("/sope",O_CREAT|O_RDWR,0666);
 	if(shmid == -1){
 		perror("shmget()");
 		exit(EXIT_FAILURE);
@@ -101,34 +102,17 @@ int main(int argc, char *argv[]){
 
 	for(i = 0; i < NR_ENTR;i++){
 
-		if(pthread_mutex_init((pthread_mutex_t*)shm+sizeof(pthread_mutex_t)*i,&mattr) != 0){
+		pthread_mutex_t tmp;
+		if(pthread_mutex_init(&tmp,&mattr) != 0){
 			perror("pthread_mutex_init()");
+			quit();
 			exit(EXIT_FAILURE);
 		}
 		mutex[i] = (pthread_mutex_t*)shm+sizeof(pthread_mutex_t)*i;
+		*mutex[i] = tmp;
 
 	}
-	printf("mutex test\n");
 
-	printf("pthread_mutex_lock(0) = %d\npthread_mutex_unlock(0) = %d\n",pthread_mutex_lock(mutex[0]),pthread_mutex_unlock(mutex[0]));
-
-	//	Partilhar mutexes
-	/*
-	key_t key = ftok("sope2",0);
-	shmid = shmget(key,4*sizeof(pthread_mutex_t),IPC_EXCL |IPC_CREAT | 0666);
-	if(shmid == -1){
-		perror("shmget()");
-		exit(EXIT_FAILURE);
-	}
-
-	mutex = (pthread_mutex_t*) shmat(shmid,NULL,0);
-
-	for(i = 0; i < NR_ENTR;i++){
-		pthread_mutex_t tmp_mutex;
-		pthread_mutex_init(&tmp_mutex,&mattr);
-		mutex[i] = tmp_mutex;
-	}
-	 */
 	//	Criar FIFOs
 	for(i = 0; i < NR_ENTR; i++)
 		if(mkfifo(fifo[i], O_RDWR) != 0){
@@ -175,20 +159,25 @@ int main(int argc, char *argv[]){
 	//	Fechar parque
 	vehicle stop = last_vehicle();
 
+	if(pthread_mutex_lock(mutex[i]) != 0){
+		//perror("pthread_mutex_lock()");
+		//quit();
+		//exit(EXIT_FAILURE);
+	}
 	printf("Done! Closing park ...\n");
 	for(i = 0; i < NR_ENTR; i++){
-		if(pthread_mutex_lock(mutex[i]) != 0){
-			perror("pthread_mutex_lock()");
-			quit();
-			exit(EXIT_FAILURE);
-		}
+
 		if(write(fd[i],&stop,sizeof(stop)) == -1){
 			perror("write()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
 	}
-
+	if(pthread_mutex_unlock(mutex[i]) != 0){
+		//perror("pthread_mutex_unlock()");
+		//quit();
+		//exit(EXIT_FAILURE);
+	}
 
 
 	//	Fechar FIFOs
@@ -214,14 +203,8 @@ int main(int argc, char *argv[]){
 			exit(EXIT_FAILURE);
 		}
 
-		if(pthread_mutex_unlock(mutex[i]) != 0){
-			perror("pthread_mutex_unlock()");
-			quit();
-			exit(EXIT_FAILURE);
-		}
+
 	}
-
-
 
 	quit();
 
@@ -234,7 +217,6 @@ void *ctrl_thread(void *var){
 	thread_param param;
 
 	param.i = *(size_t*) var;
-	_Bool closed = 0;
 
 	printf("ctrl_thread(\"%s\")\n",fifo[param.i]);
 
@@ -253,43 +235,11 @@ void *ctrl_thread(void *var){
 
 	while(read(fd,&param.v,sizeof(vehicle)) != 0){
 
-		if(closed){
-
-			if(pthread_mutex_lock(&log_mutex) != 0){
-				perror("pthread_mutex_lock()");
-				quit();
-				exit(EXIT_FAILURE);
-			}
-
-			clock_t current_tick = clock();
-			char log_line[LOG_LINE_MAX_SIZE];
-
-			sprintf(log_line,
-					"%lluu\t;\t%d\t;\t%d\t;\tencerrado\n",
-					(unsigned long long) (current_tick - start),
-					(int)empty_spots,
-					param.v.id);
-
-			if(write(log_fd,log_line,strlen(log_line)) == -1){
-				perror("write()");
-				quit();
-				exit(EXIT_FAILURE);
-			}
-
-			if(pthread_mutex_lock(&log_mutex) != 0){
-				perror("pthread_mutex_lock()");
-				quit();
-				exit(EXIT_FAILURE);
-			}
-
-			continue;
-		}
-
 		if(param.v.id == -1){
 			closed = 1;
 			printf("Entrance %d is closed.\n",(int)param.i);
+			continue;
 		}
-
 
 		if((param.tid = pthread_create(
 				&param.t,
@@ -303,7 +253,6 @@ void *ctrl_thread(void *var){
 		}
 
 	}
-
 
 	//	Fechar FIFO
 	if(close(fd) != 0){
@@ -330,23 +279,50 @@ void *arrum_thread(void *var){
 		exit(EXIT_FAILURE);
 	}	
 
-	printf("Entrada %d\n", (int)param->i);
+	printf("Entrance %d\n", (int)param->i);
 	vehicle_info(&param->v);
 
 	char fifo_priv[FIFO_NAME_BUFFER_SIZE];
 	sprintf(fifo_priv,"fifo%d",param->v.id);
 
+	printf("Opening private FIFO ...");
 	int fd_w = open(fifo_priv,O_WRONLY|O_NONBLOCK, 0666);
 	if(fd_w == -1){
 		perror("open()");
 		quit();
 		exit(EXIT_FAILURE);
 	}
+	printf(" Done!\n");
 
 	char log_line[LOG_LINE_MAX_SIZE];
+	clock_t current_tick;
 
-	//	Caso hajam lugares livres
-	if(empty_spots > (size_t)0){
+	if(closed){
+
+		if(write(fd_w,"encerrado",9) == -1){
+			perror("write()");
+			exit(EXIT_FAILURE);
+		}
+
+		current_tick = clock();
+		char log_line[LOG_LINE_MAX_SIZE];
+
+		sprintf(log_line,
+				"%d\t;\t%d\t;\t%d\t;\tencerrado\n",
+				(int) (current_tick - start),
+				(int)empty_spots,
+				param->v.id);
+
+		if(pthread_mutex_lock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
+		if(write(log_fd,log_line,strlen(log_line)) == -1){
+			perror("write()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
 
 		if(pthread_mutex_lock(&log_mutex) != 0){
 			perror("pthread_mutex_lock()");
@@ -354,19 +330,10 @@ void *arrum_thread(void *var){
 			exit(EXIT_FAILURE);
 		}
 
-		clock_t current_tick = clock();
+	}
 
-		sprintf(log_line,
-				"%llu\t;\t%d\t;\t%d\t;\testacionamento\n",
-				(unsigned long long) (current_tick - start),
-				(int) empty_spots,
-				param->v.id
-		);
-		if(write(log_fd,log_line,strlen(log_line)) == -1){
-			perror("write()");
-			quit();
-			exit(EXIT_FAILURE);
-		}
+	//	Caso hajam lugares livres
+	else if(empty_spots > (size_t)0){
 
 		if(write(fd_w,"entrada",7) == -1){
 			perror("write()");
@@ -379,20 +346,49 @@ void *arrum_thread(void *var){
 			quit();
 			exit(EXIT_FAILURE);
 		}
-
 		empty_spots--;
-
 		if(pthread_mutex_unlock(&empty_spots_mutex) != 0){
 			perror("pthread_mutex_unlock()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
 
+		current_tick = clock();
+		sprintf(log_line,
+				"%d\t;\t%d\t;\t%d\t;\testacionamento\n",
+				(int) (current_tick - start),
+				(int) empty_spots,
+				param->v.id
+		);
+
+		if(pthread_mutex_lock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
+		if(write(log_fd,log_line,strlen(log_line)) == -1){
+			perror("write()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
+		if(pthread_mutex_unlock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
+
+
+
 		clock_t end = clock() + param->v.duration;
-
-
 		//	Esperar saida do carro
 		while(clock() < end);
+
+
+		if(write(fd_w,"saida",5) == -1){
+			perror("write()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
 
 
 		//	Incrementar lugares livres
@@ -401,67 +397,72 @@ void *arrum_thread(void *var){
 			quit();
 			exit(EXIT_FAILURE);
 		}
-
 		empty_spots++;
-
 		if(pthread_mutex_unlock(&empty_spots_mutex) != 0){
 			perror("pthread_mutex_unlock()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
 
-		if(write(fd_w,"saida",5) == -1){
-			perror("write()");
-			quit();
-			exit(EXIT_FAILURE);
-		}
+
+		current_tick = clock();
+		memset(log_line,0,LOG_LINE_MAX_SIZE);
+		sprintf(log_line,
+				"%d\t;\t%d\t;\t%d\t;\tsaida\n",
+				(int) (current_tick - start),
+				(int) empty_spots,
+				param->v.id
+		);
 
 		if(pthread_mutex_lock(&log_mutex) != 0){
 			perror("pthread_mutex_lock()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
-
-		current_tick = clock();
-		memset(log_line,0,LOG_LINE_MAX_SIZE);
-		sprintf(log_line,
-				"%llu\t;\t%d\t;\t%d\t;\tsaida\n",
-				(unsigned long long) (current_tick - start),
-				(int) empty_spots,
-				param->v.id
-		);
 		if(write(log_fd,log_line,strlen(log_line)) == -1){
 			perror("write()");
+			quit();
+			exit(EXIT_FAILURE);
+		}
+		if(pthread_mutex_unlock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
 	}
 	else{
+		if(write(fd_w,"cheio!",6) == -1){
+			quit();
+			perror("write()");
+			exit(EXIT_FAILURE);
+		}
+
+		current_tick = clock();
+		sprintf(log_line,
+				"%d\t;\t%d\t;\t%d\t;\tcheio\n",
+				(int) (current_tick - start),
+				(int) empty_spots,
+				param->v.id
+		);
 
 		if(pthread_mutex_lock(&log_mutex) != 0){
 			perror("pthread_mutex_lock()");
 			quit();
 			exit(EXIT_FAILURE);
 		}
-
-		clock_t current_tick = clock();
-		sprintf(log_line,
-				"%llu\t;\t%d\t;\t%d\t;\tcheio\n",
-				(unsigned long long) (current_tick - start),
-				(int) empty_spots,
-				param->v.id
-		);
 		if(write(log_fd,log_line,strlen(log_line)) == -1){
 			quit();
 			perror("write()");
 			exit(EXIT_FAILURE);
 		}
-
-		if(write(fd_w,"cheio!",6) == -1){
+		if(pthread_mutex_unlock(&log_mutex) != 0){
+			perror("pthread_mutex_lock()");
 			quit();
-			perror("write()");
 			exit(EXIT_FAILURE);
 		}
+
+
+
 	}
 
 	if(close(fd_w) != 0){
@@ -471,7 +472,7 @@ void *arrum_thread(void *var){
 	}
 
 	free(var);
-
+	printf("arrum_thread() end\n\n");
 	return NULL;
 
 }
